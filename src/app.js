@@ -1,26 +1,30 @@
 import express from "express";
-import multer from "multer";
-import path from "path";
-import fs from "fs";
-import * as XLSX from "xlsx";
+import sqlite3 from "better-sqlite3";
+import { fileURLToPath } from "url";
+import { dirname } from "path";
+
+import uploadFile from "./modules/uploadFile.js";
+import fileParser from "./modules/fileParser.js";
+import dataExtractor from "./utils/dataExtractor.js";
+import { sendEmailWithAttachment } from "./modules/sendEmailWithAttachment.js";
+
+
+// Создаем подключение к базе данных SQLite
+const db = sqlite3("db/data.db");
+
+// Создаем таблицу, если она не существует
+db.exec(`
+  CREATE TABLE IF NOT EXISTS files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT,
+    data JSON
+  )
+`);
 
 const app = express();
 const port = 3005;
 
-// Настройка Multer для сохранения загруженных файлов
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    // Используйте исходное имя файла и добавьте его расширение
-    const ext = path.extname(file.originalname);
-    const filename = `${Date.now()}${ext}`;
-    cb(null, filename);
-  }
-});
-
-const upload = multer({ storage });
+const upload = uploadFile();
 
 // Middleware для установки заголовков CORS
 app.use((req, res, next) => {
@@ -30,11 +34,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/", (_, res) => {
-  res.send("Test");
-});
-
-app.post("/upload", upload.single("file"), (req, res) => {
+app.post("/upload", upload.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).send("Файл не найден");
   }
@@ -42,42 +42,32 @@ app.post("/upload", upload.single("file"), (req, res) => {
   const filePath = req.file.path;
   console.log("Файл получен:", req.file);
 
-  // Верните ответ клиенту сразу после загрузки
-  res.send("Файл успешно загружен");
+  const originalname = Buffer.from(req.file.originalname, "latin1").toString("utf8");
+
+  // Отправка файла на почту
+  //!await sendEmailWithAttachment(filePath);
 
   // Отложенная обработка файла
-  processFile(filePath);
+  const data = await fileParser(filePath);
+  const result = await dataExtractor(data);
+
+  // Запись данных в SQLite
+  await saveDataToDatabase(originalname, result);
+
+  res.json(result);
 });
-
-// Функция для обработки загруженного файла
-const processFile = (filePath) => {
-  try {
-    // Чтение файла Excel в буфер
-    const fileBuffer = fs.readFileSync(filePath);
-
-    // Чтение Excel файла из буфера
-    const workbook = XLSX.read(fileBuffer, { type: "buffer" });
-    console.log("Имена листов:", workbook.SheetNames);
-
-    // Перебор всех листов и вывод данных для отладки
-    const jsonData = {};
-    workbook.SheetNames.forEach((sheetName) => {
-      const sheet = workbook.Sheets[sheetName];
-      const data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-      jsonData[sheetName] = data;
-      console.log(`Данные листа "${sheetName}":`, data);
-    });
-
-    // Удаление файла после обработки
-    //fs.unlinkSync(filePath);
-
-    // Обработка завершена
-    console.log("Файл успешно обработан");
-  } catch (error) {
-    console.error("Ошибка парсинга файла:", error);
-  }
-};
 
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
 });
+
+// Функция для записи данных в базу данных
+function saveDataToDatabase(filename, data) {
+  try {
+    const stmt = db.prepare("INSERT INTO files (filename, data) VALUES (?, ?)");
+    stmt.run(filename, JSON.stringify(data));
+    console.log("Данные успешно сохранены в базу данных");
+  } catch (error) {
+    console.error("Ошибка записи в базу данных:", error);
+  }
+}
