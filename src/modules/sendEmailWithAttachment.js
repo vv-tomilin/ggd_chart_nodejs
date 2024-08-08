@@ -14,7 +14,7 @@ export async function sendEmailWithAttachment(filePath, originalFilename) {
 
   let mailOptions = {
     from: "work_test_tomilin@mail.ru",
-    to: "vtomilin@rigintelpro.ru",
+    to: "zsn@rigintelpro.ru",
     subject: "Загруженный файл",
     text: "Пожалуйста, найдите вложенный файл.",
     attachments: [
